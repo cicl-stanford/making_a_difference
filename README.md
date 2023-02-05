@@ -22,10 +22,6 @@ How critical are individual members perceived to be for their group's performanc
         ├── experiment_1
         └── experiment_2
 
-### data
-
-- data files
-
 ### code
 
 #### experiments
@@ -45,7 +41,25 @@ How critical are individual members perceived to be for their group's performanc
 
 - Flash code for Experiment 2 in this paper; separate files for the effort condition `experiment_2_effort.fla` (reported only in the appendix) and the criticality condition `experiment_2.fla`. 
 
-### R
+#### R
 
 - analysis code
 - you can view a rendered html file of the analysis [here](https://cicl-stanford.github.io/making_a_difference/).
+
+### data
+
+- data files
+
+### figures
+
+#### diagrams
+
+- diagrams of the different group structures 
+
+#### plots
+
+- results plots from the paper 
+
+#### screenshots
+
+- screenshots of the different experiment screens 
