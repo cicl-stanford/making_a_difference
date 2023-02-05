@@ -1,0 +1,2142 @@
+---
+title: "Criticality"
+author: "Tobias Gerstenberg"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  bookdown::html_document2:
+    toc: true
+    toc_depth: 4
+    toc_float: true
+    theme: cosmo
+    highlight: tango
+---
+
+# Load packages
+
+```{r, message=F}
+library("knitr")
+library("png")
+library("grid")
+library("egg")        
+library("janitor")      # for cleaning variable names 
+library("glue")      
+library("corrr")      
+library("xtable")      
+library("kableExtra")      
+library("brms")      
+library("broom.mixed")      
+library("Metrics")      # for rmse     
+library("tidyverse")
+```
+
+# Settings 
+
+```{r}
+theme_set(theme_classic() + 
+    theme(text = element_text(size = 24)))
+
+opts_chunk$set(comment = "",
+               fig.show = "hold")
+
+# suppress grouping warning 
+options(dplyr.summarise.inform = F)
+
+# model order 
+model_order = c("heuristic", "necessity", "credit", "blame", "responsibility")
+
+# function for printing out html or latex tables 
+print_table = function(data, format = "html", digits = 2){
+  if(format == "html"){
+    data %>% 
+      kable(digits = digits) %>% 
+      kable_styling()
+  }else if(format == "latex"){
+    data %>% 
+      xtable(digits = digits,
+             caption = "Caption",
+             label = "tab:table") %>%
+      print(include.rownames = F,
+            booktabs = T,
+            sanitize.colnames.function = identity,
+            caption.placement = "top")
+  }
+}
+```
+
+# READ IN DATA
+
+## Experiment 0: Lagnado, Gerstenberg & Zultan (2013)
+
+```{r}
+df.exp0 = read.csv(file = "../../data/lagnado_gerstenberg_zultan_2013_criticality.csv")
+
+df.exp0.long = df.exp0 %>% 
+  clean_names() %>% 
+  pivot_longer(cols = -c(participant, situation),
+               values_to = "criticality") %>% 
+  unite(col = "structure", situation:name) %>% 
+  mutate(structure = factor(structure, 
+                            levels = str_c(rep(1:2, each = 4), "_challenge_", rep(1:4, 2)),
+                            labels = c("dis2", "con2", "dis4", "con4",
+                                       "dis2con2","con2dis2","dis3con1","con1dis3")))
+```
+
+## Experiment 1: Criticality with mixed structures
+
+```{r}
+df.exp1 = read.csv(file = "../../data/experiment1.csv") 
+  
+df.exp1.demographics = df.exp1 %>% 
+  select(age, gender = gender_1.female_2.male) %>% 
+  mutate(gender = factor(gender, 
+                         levels = 1:2,
+                         labels = c("female", "male")))
+
+df.exp1.long = df.exp1 %>% 
+  rename_with(.fn = ~ str_remove(., "_challenge")) %>% 
+  rename_with(.fn = ~ str_remove(., "_player")) %>% 
+  rename_with(.fn = ~ str_replace(., "_i", ".i")) %>% 
+  select(sn:mixed.ii_b) %>% 
+  rename(participant = sn) %>% 
+  pivot_longer(cols = -participant,
+               names_to = c("structure", "person"),
+               names_sep = "_") %>% 
+  mutate(structure = str_replace(structure, "mixed.ii", "mixed_2"),
+         structure = str_replace(structure, "mixed.i", "mixed_1"),
+         structure = factor(structure,
+                            levels = c("disjunctive",
+                                       "conjunctive",
+                                       "mixed_1",
+                                       "mixed_2")))
+```
+
+### Demographics 
+
+```{r}
+df.exp1 %>% 
+  clean_names() %>% 
+  select(participant = sn, 
+         age, 
+         gender = gender_1_female_2_male) %>% 
+  summarize(age_mean = mean(age),
+            age_sd = sd(age),
+            n_female = sum(gender == 1),
+            n_male = sum(gender == 2),
+            n = n()) %>% 
+  print_table(digits = 0)
+```
+
+## Experiment 2: Probabilistic criticality
+
+```{r, warning=FALSE, message=FALSE}
+df.exp2 = read.csv(file = "../../data/experiment2.csv",
+                   header = F)
+
+header = c("id",
+           "date",
+           paste(c("structure", "p1", "p2", "p3", "prediction", "r1", "r2", "r3"),
+                 rep(1:24, each = 8),
+                 sep = "_"),
+           str_c("question", 1:6),
+           str_c("clicks", 1:4),
+           str_c("criticality", 1:4),
+           paste0(c("situation", str_c("b", 1:4)), rep(1:4, each = 5)),
+           "age",
+           "gender",
+           "tinstructions",
+           "ttotal",
+           "condition",
+           str_c("billy", 1:6),"feedback")
+
+names(df.exp2) = header
+
+df.exp2.demographics = df.exp2 %>% 
+  select(age, gender, condition, ttotal, contains("question"), contains("clicks")) %>% 
+  mutate(participant = 1:nrow(.),
+         condition = factor(condition,
+                            levels = 1:2,
+                            labels = c("criticality", "effort")),
+         gender = factor(gender,
+                            levels = 1:2,
+                            labels = c("female", "male")),) %>% 
+  relocate(participant, condition)
+  
+df.exp2.long = df.exp2 %>% 
+  select(participant = id, contains("_")) %>% 
+  mutate(participant = 1:nrow(.),
+         across(.cols = contains("structure"),
+                .fns = ~ factor(.,
+                              levels = c(1, 2, 3),
+                              labels = c("disjunctive", "conjunctive", "mixed")))) %>%
+  pivot_longer(cols = -participant,
+               names_to = c("index", "order"),
+               names_sep = "_",
+               values_to = "value",
+               values_transform = list(value = as.character)) %>% 
+  pivot_wider(names_from = index,
+              values_from = value) %>% 
+  left_join(df.exp2.demographics %>% 
+              select(participant, condition),
+            by = "participant") %>% 
+  mutate(structure = factor(structure,
+                            labels = c("disjunctive", "conjunctive", "mixed")),
+         across(.cols = c(p1:p3, r1:r3),
+                .fns = ~ as.numeric(.))) %>% 
+  group_by(participant) %>% 
+  arrange(participant, structure, p1, p2, p3) %>% 
+  mutate(trial = 1:24) %>% 
+  ungroup() %>% 
+  relocate(condition, trial, .after = participant) 
+
+# counterbalancing (cumbersome solution)
+# 1 333
+# 2 777
+# 3 462
+# 4 465
+# 5 468
+# 6 731
+# 7 735
+# 8 739
+
+# df.tmp = df.exp2.long %>% 
+#   filter(participant == 1) %>% 
+#   select(trial, structure, p1:p3)
+
+df.exp2.info = tibble(trial = 1:24,
+                      structure = rep(c("disjunctive", "conjunctive", "mixed"), each = 8),
+                      p1 = rep(c(3, 7, 4, 4, 4, 7, 7, 7), 3),
+                      p2 = rep(c(3, 7, 6, 6, 6, 3, 3, 3), 3),
+                      p3 = rep(c(3, 7, 2, 5, 8, 1, 5, 9), 3),
+                      trial_order = c(6, 1, 7, 8, 3, 4, 5, 2,
+                                      6, 3, 1, 4, 7, 2, 5, 8,
+                                      1, 3, 4, 5, 6, 7, 8, 2))
+
+# double check that this was done correctly 
+df.exp2.long = df.exp2.long %>% 
+  mutate(
+    resp1 = case_when(
+      trial == 1 ~ r3,
+      trial == 3 ~ r3,
+      trial == 4 ~ r3,
+      trial == 5 ~ r3,
+      trial == 6 ~ r3,
+      trial == 7 ~ r3,
+      trial == 9 ~ r2,
+      trial == 10 ~ r2,
+      trial == 12 ~ r2,
+      trial == 13 ~ r2,
+      trial == 15 ~ r2,
+      trial == 16 ~ r2,
+      TRUE ~ r1),
+    resp2 = case_when(
+      trial == 1 ~ r1,
+      trial == 3 ~ r1,
+      trial == 4 ~ r1,
+      trial == 5 ~ r1,
+      trial == 6 ~ r1,
+      trial == 7 ~ r1,
+      trial == 9 ~ r3,
+      trial == 10 ~ r3,
+      trial == 12 ~ r3,
+      trial == 13 ~ r3,
+      trial == 15 ~ r3,
+      trial == 16 ~ r3,
+      TRUE ~ r2
+    ),
+    resp3 = case_when(
+      trial == 1 ~ r2,
+      trial == 3 ~ r2,
+      trial == 4 ~ r2,
+      trial == 5 ~ r2,
+      trial == 6 ~ r2,
+      trial == 7 ~ r2,
+      trial == 9 ~ r1,
+      trial == 10 ~ r1,
+      trial == 12 ~ r1,
+      trial == 13 ~ r1,
+      trial == 15 ~ r1,
+      trial == 16 ~ r1,
+      TRUE ~ r3
+    )) %>% 
+  left_join(df.exp2.info %>% 
+              select(trial, trial_order),
+            by = "trial") %>% 
+  select(-c(trial, p1:p3)) %>% 
+  relocate(trial = trial_order, .after = condition) %>% 
+  left_join(df.exp2.info %>% 
+              select(trial, p1:p3),
+            by = "trial") %>% 
+  select(participant, condition, trial, order, structure, p1:p3, prediction,
+         resp1:resp3) %>% 
+  mutate(across(c(order, prediction), ~ as.numeric(.))) %>% 
+  unite(col = "probs",
+        p1:p3,
+        sep = "",
+        remove = F) %>% 
+  mutate(probs = factor(probs,
+                        levels = c("333",
+                                   "777",
+                                   "462",
+                                   "465",
+                                   "468",
+                                   "731",
+                                   "735",
+                                   "739"))) %>% 
+  arrange(participant, condition, structure, trial)
+
+# switch conjunctive and disjunctive label 
+df.exp2.long = df.exp2.long %>%
+  mutate(structure = fct_recode(structure,
+                                conjunctive = "disjunctive",
+                                disjunctive = "conjunctive"),
+         structure = factor(structure,
+                            levels = c("disjunctive", "conjunctive", "mixed")))
+```
+
+### Demographics 
+
+```{r}
+df.exp2.demographics %>% 
+  filter(condition == "criticality") %>% 
+  select(participant, age, gender, time = ttotal) %>% 
+  summarize(age_mean = round(mean(age), 0),
+            age_sd = round(sd(age), 0),
+            time_mean = mean(time), 
+            time_sd = sd(time),
+            n_female = sum(gender == "female"),
+            n_male = sum(gender == "male"),
+            n = n()) %>% 
+  print_table(digits = 2)
+```
+
+# MODEL PREDICTIONS
+
+## Models
+
+### Probability of necessity
+
+1 - [p(E|~C) / p(E|C)]
+
+p(E|~C) = p(E,~C)/p(~C)
+p(E|C) = p(E,C)/p(C)
+
+```{r, warning=FALSE, message=FALSE}
+fun_necessity = function(data, player){
+  data %>% 
+    mutate(joint_positive := {{player}} & outcome,
+           marginal_positive := {{player}} == 1,
+           joint_negative := !{{player}} & outcome,
+           marginal_negative := !{{player}} == 1) %>% 
+    mutate(across(.cols = c(contains("joint"), contains("marginal")),
+                  .fns = ~ . * probability)) %>%
+    group_by(structure, a_p, b_p, c_p, d_p) %>%
+    summarize(across(.cols = c(contains("joint"), contains("marginal")),
+                     .fns = ~ sum(.))) %>%
+    mutate("{{player}}_necessity" := 1 - ((joint_negative/marginal_negative)/
+                                               (joint_positive/marginal_positive))) %>% 
+    ungroup() %>% 
+    select(structure, a_p, b_p, c_p, d_p, contains("necessity"))
+}
+```
+
+### Anticipated responsibility, credit, blame
+
+```{r, warning=FALSE, message=FALSE}
+fun_responsibility = function(data, player, type){
+  if (type == "credit"){
+    condition = 1
+  } else if (type == "blame"){
+    condition = 0
+  } else if (type == "responsibility"){
+    condition = c(0, 1)
+  }
+  data %>%
+    filter(outcome %in% condition) %>%
+    mutate("{{player}}" := {{player}} * probability) %>%
+    group_by(structure, a_p, b_p, c_p, d_p) %>%
+    summarize(across(.cols = c({{player}}, probability),
+                     .fns = ~ sum(.))) %>%
+    mutate("{{player}}_{type}" := {{player}}/probability) %>%
+    ungroup() %>%
+    select(structure, contains("_p"), contains(type))
+}
+```
+
+
+```{r}
+fun_responsibility = function(data, player, type){
+  if (type == "credit"){
+    condition = 1
+  } else if (type == "blame"){
+    condition = 0
+  } else if (type == "responsibility"){
+    condition = c(0, 1)
+  }
+  pivotal_player = str_c("pivotal_", player)
+  data %>%
+    # this version makes the credit model equivalent to the necessity model
+    # filter(outcome %in% condition,
+    #        get(player) %in% condition) %>%
+    filter(outcome %in% condition) %>%
+    mutate("{pivotal_player}" :=  get(pivotal_player) * probability) %>%
+    group_by(structure, a_p, b_p, c_p, d_p) %>%
+    summarize(across(.cols = c({{pivotal_player}}, probability),
+                     .fns = ~ sum(.))) %>%
+    mutate("{player}_{type}" := get(pivotal_player)/probability) %>%
+    ungroup() %>%
+    select(structure, contains("_p"), contains(type))
+}
+```
+
+
+### Probabilistic criticality model 
+
+```{r}
+fun_prob_criticality = function(n, k, p){
+  criticality = choose(n - 1, k - 1) * p ^ (k - 1) * (1 - p) ^ (n - k)
+  criticality
+}
+
+fun_prob_criticality(3, 3, 0.3)
+```
+
+
+## Experiment 0
+
+### Data frame
+
+```{r}
+probs = c(.5)
+act = c(0, 1)
+structure = df.exp0.long %>% 
+  distinct(structure) %>% 
+  pull(structure)
+
+df.exp0.model = expand_grid(a = act, 
+                            b = act,
+                            c = act,
+                            d = act,
+                            a_p = probs, 
+                            b_p = probs,
+                            c_p = probs,
+                            d_p = probs,
+                            structure = structure) %>%
+  arrange(structure) %>% 
+  mutate(across(.cols = c(c, d, c_p, d_p),
+                .fns = ~ ifelse(structure %in% c("dis2", "con2"), NA, .))) %>% 
+  distinct() %>% 
+  mutate(index = 1:n(),
+         n = ifelse(structure %in% c("dis2", "con2"), 2, 4),
+         .before = a) %>%
+  mutate(outcome = case_when(
+    structure == "dis2" & (a == 1 | b == 1) ~ 1,
+    structure == "con2" & (a == 1 & b == 1) ~ 1,
+    structure == "dis4" & (a == 1 | b == 1 | c == 1 | d == 1) ~ 1,
+    structure == "con4" & (a == 1 & b == 1 & c == 1 & d == 1) ~ 1,
+    structure == "dis2con2" & ((a == 1 | b == 1) & c == 1 & d == 1) ~ 1,
+    structure == "con2dis2" & (a == 1 & b == 1 & (c == 1 | d == 1)) ~ 1,
+    structure == "dis3con1" & ((a == 1 | b == 1 | c == 1) & d == 1) ~ 1,
+    structure == "con1dis3" & (a == 1 & (b == 1 | c == 1 | d == 1)) ~ 1,
+    TRUE ~ 0)) %>% 
+  mutate(pivotal_a = case_when(
+    structure == "dis2" & b == 0 ~ 1,
+    structure == "con2" & b == 1 ~ 1,
+    structure == "dis4" & b == 0 & c == 0 & d == 0 ~ 1,
+    structure == "con4" & b == 1 & c == 1 & d == 1 ~ 1,
+    structure == "dis2con2" & b == 0 & c == 1 & d == 1 ~ 1,
+    structure == "con2dis2" & b == 1 & (c == 1 | d == 1) ~ 1,
+    structure == "dis3con1" & b == 0 & c == 0 & d == 1 ~ 1,
+    structure == "con1dis3" & (b == 1 | c == 1 | d == 1) ~ 1,
+    TRUE ~ 0)) %>% 
+  mutate(probability = ifelse(test = n == 4, 
+                              yes = (a * a_p + (1 - a) * (1 - a_p)) * 
+                                (b * b_p + (1 - b) * (1 - b_p)) * 
+                                (c * c_p + (1 - c) * (1 - c_p)) * 
+                                (d * d_p + (1 - d) * (1 - d_p)),
+                              no = (a * a_p + (1 - a) * (1 - a_p)) * 
+                                (b * b_p + (1 - b) * (1 - b_p))))
+```
+
+### Models
+
+```{r, message=FALSE}
+df.exp0.predictions = df.exp0.model %>% 
+  distinct(structure) %>% 
+  left_join(df.exp0.model %>% 
+              fun_necessity(player = a)) %>% 
+  mutate(a_heuristic = c(0.5, 1, 0.25, 1, 0.5, 1, 1/3, 1),
+         .before = "a_necessity") %>% 
+  left_join(df.exp0.model %>% 
+              fun_responsibility(player = "a",
+                                 type = "credit") %>% 
+              select(structure, a_credit)) %>% 
+  left_join(df.exp0.model %>% 
+              fun_responsibility(player = "a",
+                                 type = "blame") %>% 
+              select(structure, a_blame)) %>%
+  left_join(df.exp0.model %>% 
+              fun_responsibility(player = "a",
+                                 type = "responsibility") %>% 
+              select(structure, a_responsibility)) %>% 
+  rename_with(.fn = ~ str_remove(string = ., pattern = "a_"))
+```
+
+### Model fitting
+
+```{r}
+df.exp0.fits = df.exp0.predictions %>% 
+  left_join(
+    df.exp0.long %>% 
+      group_by(structure) %>% 
+      summarize(mean = mean(criticality)),
+    by = "structure") %>% 
+  ungroup() %>% 
+  mutate(across(.cols = heuristic:responsibility,
+                .fns = ~ lm(mean ~ 1 + .)$fitted,
+                .names = "{.col}_fitted"),
+         baseline_fitted = lm(mean ~ 1)$fitted)
+```
+
+## Experiment 1
+
+### Data frame
+
+```{r}
+probs = c(.5)
+act = c(0, 1)
+structure = c("disjunctive", "conjunctive", "mixed_1", "mixed_2")
+
+df.exp1.model = expand_grid(a = act,
+                            b = act,
+                            c = act,
+                            d = NA, 
+                            a_p = probs,
+                            b_p = probs,
+                            c_p = probs,
+                            d_p = NA,
+                            structure = structure) %>% 
+  mutate(outcome = case_when(
+    structure == "conjunctive" & (a == 1 & b == 1 & c == 1) ~ 1,
+    structure == "disjunctive" & (a == 1 | b == 1 | c == 1) ~ 1,
+    structure == "mixed_1" & (a == 1 & (b == 1 | c == 1)) ~ 1,
+    structure == "mixed_2" & (a == 1 | (b == 1 & c == 1)) ~ 1,
+    TRUE ~ 0
+  )) %>% 
+  mutate(pivotal_a = case_when(
+    structure == "conjunctive" & (b == 1 & c == 1) ~ 1,
+    structure == "disjunctive" & (b == 0 & c == 0) ~ 1,
+    structure == "mixed_1" & (b == 1 | c == 1) ~ 1,
+    structure == "mixed_2" & (b == 0 | c == 0) ~ 1,
+    TRUE ~ 0
+  )) %>% 
+  mutate(pivotal_b = case_when(
+    structure == "conjunctive" & (a == 1 & c == 1) ~ 1,
+    structure == "disjunctive" & (a == 0 & c == 0) ~ 1,
+    structure == "mixed_1" & (a == 1 & c == 0) ~ 1,
+    structure == "mixed_2" & (a == 0 & c == 1) ~ 1,
+    TRUE ~ 0
+  )) %>% 
+  mutate(pivotal_c = case_when(
+    structure == "conjunctive" & (a == 1 & b == 1) ~ 1,
+    structure == "disjunctive" & (a == 0 & b == 0) ~ 1,
+    structure == "mixed_1" & (a == 1 & b == 0) ~ 1,
+    structure == "mixed_2" & (a == 0 & b == 1) ~ 1,
+    TRUE ~ 0
+  )) %>% 
+  mutate(probability = (a * a_p + (1 - a) * (1 - a_p)) * 
+           (b * b_p + (1 - b) * (1 - b_p)) *
+           (c * c_p + (1 - c) * (1 - c_p)))
+
+```
+
+### Models
+
+```{r, message=FALSE}
+df.exp1.predictions = df.exp1.model %>% 
+  distinct(structure) %>% 
+  mutate(a_heuristic = c(1/3, 1, 1, 0.5),
+         b_heuristic = c(1/3, 1, 0.5, 0.5)) %>% 
+  left_join(df.exp1.model %>% 
+              fun_necessity(player = a)) %>% 
+  left_join(df.exp1.model %>% 
+              fun_necessity(player = b)) %>% 
+  left_join(df.exp1.model %>% 
+              fun_responsibility(player = "a",
+                                 type = "credit") %>% 
+              select(structure, a_credit)) %>% 
+  left_join(df.exp1.model %>% 
+              fun_responsibility(player = "b",
+                                 type = "credit") %>% 
+              select(structure, b_credit)) %>% 
+  left_join(df.exp1.model %>% 
+              fun_responsibility(player = "a",
+                                 type = "blame") %>% 
+              select(structure, a_blame)) %>% 
+  left_join(df.exp1.model %>% 
+              fun_responsibility(player = "b",
+                                 type = "blame") %>% 
+              select(structure, b_blame)) %>%
+  left_join(df.exp1.model %>% 
+              fun_responsibility(player = "a",
+                                 type = "responsibility") %>% 
+              select(structure, a_responsibility)) %>% 
+  left_join(df.exp1.model %>% 
+              fun_responsibility(player = "b",
+                                 type = "responsibility") %>% 
+              select(structure, b_responsibility))
+```
+
+### Model fitting
+
+```{r}
+df.exp1.fits = df.exp1.long %>% 
+  mutate(structure = str_replace(structure, "d.ii", "d_2")) %>% 
+  mutate(structure = str_replace(structure, "d.i", "d_1")) %>% 
+  group_by(structure, person) %>% 
+  summarize(criticality = mean(value)) %>% 
+  ungroup() %>% 
+  left_join(df.exp1.predictions %>% 
+              select(structure, contains("a_"), contains("b_"), -a_p, -b_p) %>% 
+              pivot_longer(cols = -structure,
+                           names_to = c("person", "model"),
+                           names_sep = "_",
+                           values_to = "prediction"),
+            by = c("structure", "person")
+            ) %>% 
+  pivot_wider(names_from = model,
+              values_from = prediction) %>% 
+  ungroup() %>% 
+  mutate(across(.cols = heuristic:responsibility,
+                .fns = ~ lm(criticality ~ 1 + .)$fitted,
+                .names = "{.col}_fitted"),
+         baseline_fitted = lm(criticality ~ 1)$fitted) %>% 
+  mutate(structure = factor(structure,
+                            levels = c("disjunctive", 
+                                       "conjunctive",
+                                       "mixed_1",
+                                       "mixed_2")))
+```
+
+## Experiment 2
+
+### Data frame
+
+```{r}
+##parameter
+act = c(0, 1)
+structure = c("disjunctive", "conjunctive", "mixed")
+
+
+df.exp2.model = tibble(a_p = c(3, 7, 4, 4, 4, 7, 7, 7),
+                       b_p = c(3, 7, 6, 6, 6, 3, 3, 3),
+                       c_p = c(3, 7, 2, 5, 8, 1, 5, 9)) %>% 
+  expand_grid(structure = structure,
+              a = act,
+              b = act,
+              c = act,
+              d = NA,
+              d_p = NA) %>% 
+  mutate(across(.cols = contains("_p"),
+                .fns = ~ ./10)) %>% 
+  mutate(outcome = case_when(
+    structure == "disjunctive" & (a == 1 | b == 1 | c == 1) ~ 1,
+    structure == "conjunctive" &  (a == 1 & b == 1 & c == 1) ~ 1,
+    structure == "mixed" & (a == 1 & (b == 1 | c == 1)) ~ 1,
+    TRUE ~ 0
+  )) %>% 
+  mutate(pivotal_a = case_when(
+    structure == "disjunctive" &  b == 0 & c == 0 ~ 1,
+    structure == "conjunctive" &  b == 1 & c == 1 ~ 1,
+    structure == "mixed" & (b == 1 | c == 1) ~ 1,
+    TRUE ~ 0
+  )) %>% 
+  mutate(pivotal_b = case_when(
+    structure == "disjunctive" & a == 0 & c == 0 ~ 1,
+    structure == "conjunctive" &  a == 1 & c == 1 ~ 1,
+    structure == "mixed" & a == 1 & c == 0 ~ 1,
+    TRUE ~ 0
+  )) %>% 
+  mutate(pivotal_c = case_when(
+    structure == "disjunctive" & a == 0 & b == 0 ~ 1,
+    structure == "conjunctive" & a == 1 & b == 1 ~ 1,
+    structure == "mixed" & a == 1 & b == 0 ~ 1,
+    TRUE ~ 0
+  )) %>% 
+  mutate(probability = (a * a_p + (1 - a) * (1 - a_p)) * 
+           (b * b_p + (1 - b) * (1 - b_p)) *
+           (c * c_p + (1 - c) * (1 - c_p)))
+```
+
+### Models
+
+```{r, message=FALSE}
+df.exp2.predictions = df.exp2.model %>% 
+  distinct(structure, a_p, b_p, c_p) %>% 
+  left_join(df.exp2.model %>% 
+              fun_necessity(player = a)) %>% 
+  left_join(df.exp2.model %>% 
+              fun_necessity(player = b)) %>% 
+  left_join(df.exp2.model %>% 
+              fun_necessity(player = c)) %>% 
+  left_join(df.exp2.model %>% 
+              fun_responsibility(player = "a", type = "credit")) %>% 
+  left_join(df.exp2.model %>% 
+              fun_responsibility(player = "b", type = "credit")) %>% 
+  left_join(df.exp2.model %>% 
+              fun_responsibility(player = "c", type = "credit")) %>% 
+  left_join(df.exp2.model %>% 
+              fun_responsibility(player = "a", type = "blame")) %>% 
+  left_join(df.exp2.model %>% 
+              fun_responsibility(player = "b", type = "blame")) %>% 
+  left_join(df.exp2.model %>% 
+              fun_responsibility(player = "c", type = "blame")) %>% 
+  left_join(df.exp2.model %>% 
+              fun_responsibility(player = "a", type = "responsibility")) %>% 
+  left_join(df.exp2.model %>% 
+              fun_responsibility(player = "b", type = "responsibility")) %>% 
+  left_join(df.exp2.model %>% 
+              fun_responsibility(player = "c", type = "responsibility")) %>% 
+  select(-d_p) %>% 
+  mutate(label = str_c(structure, ":", a_p, ",", b_p, ",", c_p),
+         .after = structure)
+```
+
+### Model fitting
+
+```{r}
+df.exp2.fits = df.exp2.long %>% 
+  filter(condition == "criticality") %>% 
+  select(participant, structure, probs, resp1:resp3) %>% 
+  pivot_longer(cols = resp1:resp3) %>% 
+  mutate(name = str_remove(name, "resp"),
+         player = as.factor(name)) %>% 
+  group_by(structure, probs, player) %>% 
+  summarize(criticality = mean(value)) %>% 
+  ungroup() %>% 
+  left_join(
+    df.exp2.predictions %>% 
+      mutate(across(.cols = c(a_p, b_p, c_p),
+                    .fns = ~ . * 10)) %>% 
+      unite(col = probs, 
+            a_p, b_p, c_p,
+            sep = "",
+            remove = F) %>% 
+      pivot_longer(cols = -c(probs, structure, label),
+                   names_to = c("player", "model"),
+                   names_sep = "_") %>% 
+      pivot_wider(names_from = model,
+                  values_from = value) %>% 
+      mutate(player = factor(player,
+                             levels = c("a", "b", "c"),
+                             labels = c("1", "2", "3"))),
+    by = c("structure", "probs", "player")) %>% 
+  relocate(label, .after = probs) %>% 
+  relocate(p, .after = player) %>% 
+  ungroup() %>% 
+  # # grouped fitting 
+  # group_by(structure) %>% 
+  # mutate(across(.cols = necessity:responsibility,
+  #               .fns = ~ lm(criticality ~ .)$fitted,
+  #               .names = "{.col}_fitted")) %>% 
+  # ungroup()
+  
+  # ungrouped fitting
+  mutate(across(.cols = necessity:responsibility,
+                .fns = ~ lm(criticality ~ 1 + .)$fitted,
+                .names = "{.col}_fitted"),
+         baseline_fitted = lm(criticality ~ 1)$fitted)
+```
+
+# STATS 
+
+## Experiment 1 
+
+### Difference between player A in mixed challenges
+
+```{r}
+df.stats = df.exp1.long %>% 
+  filter(str_detect(structure, "mixed"),
+         person == "a") %>% 
+  mutate(predictor = ifelse(structure == "mixed_2", 0, 1))
+
+
+fit.exp1.mixed_a = brm(formula = value ~ 1 + predictor + (1 | participant),
+                       data = df.stats, 
+                       seed = 1,
+                       control = list(adapt_delta = 0.9),
+                       file = "cache/fit.exp1.mixed_a")
+
+fit.exp1.mixed_a %>% 
+  tidy() %>% 
+  filter(term == "predictor") %>% 
+  select(term, estimate, contains("conf")) %>% 
+  print_table()
+
+df.stats %>%
+  group_by(structure) %>% 
+  summarize(criticality_mean = mean(value),
+            criticality_sd = sd(value)) %>% 
+  print_table()
+
+```
+
+### Difference between player B in mixed challenges
+
+```{r}
+df.stats = df.exp1.long %>% 
+  filter(str_detect(structure, "mixed"),
+         person == "b") %>% 
+  mutate(predictor = ifelse(structure == "mixed_2", 0, 1))
+
+
+fit.exp1.mixed_b = brm(formula = value ~ 1 + predictor + (1 | participant),
+                       data = df.stats, 
+                       seed = 1,
+                       control = list(adapt_delta = 0.9),
+                       file = "cache/fit.exp1.mixed_b")
+
+fit.exp1.mixed_b %>% 
+  tidy() %>% 
+  filter(term == "predictor") %>% 
+  select(term, estimate, contains("conf")) %>% 
+  print_table()
+
+df.stats %>%
+  group_by(structure) %>% 
+  summarize(criticality_mean = mean(value),
+            criticality_sd = sd(value)) %>% 
+  print_table()
+```
+
+### Number of participants who give higher rating to A than B in mixed 2 challenge 
+
+```{r}
+df.exp1.long %>% 
+  filter(str_detect(structure, "mixed")) %>% 
+  pivot_wider(names_from = person,
+              values_from = value) %>% 
+  mutate(difference = (a - b) > 0) %>% 
+  count(structure, difference)
+```
+
+
+## Experiment 2 
+
+### Increase for player C in disjunctive challenges 
+
+```{r}
+df.stats = df.exp2.long %>% 
+  filter(structure %in% c("disjunctive", "mixed")) %>% 
+  filter(!probs %in% c("333", "777")) %>%
+  select(participant, structure, probs, p3, resp3)
+
+fit.exp2.player_c = brm(formula = resp3 ~ 1 + p3 + (1 + p3 | participant),
+                        data = df.stats, 
+                        seed = 1, 
+                        file = "cache/fit.exp2.player_c")
+
+fit.exp2.player_c %>% 
+  tidy() %>% 
+  filter(term == "p3") %>% 
+  select(term, estimate, contains("conf")) %>% 
+  print_table()
+```
+
+
+# PLOTS
+
+## Experiment 0
+
+```{r fig.width=12, fig.height=6}
+set.seed(1)
+
+df.plot = df.exp0.long
+
+func_load_image = function(structure){
+  readPNG(str_c("../../figures/diagrams/", structure, ".png"))
+}
+
+df.images = df.plot %>% 
+  distinct(structure) %>% 
+  mutate(grob = map(.x = structure, .f = ~ func_load_image(structure = .x)))
+
+df.model = df.exp0.fits %>% 
+  select(structure, contains("_fitted")) %>% 
+  rename_with(.fn = ~ str_remove(., "_fitted")) %>% 
+  pivot_longer(cols = -structure, 
+               names_to = "model",
+               values_to = "criticality") %>% 
+  mutate(model = factor(model, levels = c(model_order, "baseline"))) %>% 
+  filter(model != "baseline")
+
+df.text = df.plot %>% 
+  distinct(structure) %>% 
+  mutate(x = 1,
+         y = 138,
+         label = 1:8)
+
+
+ggplot(data = df.plot,
+       mapping = aes(x = structure,
+                     y = criticality)) + 
+  geom_point(alpha = 0.05,
+             position = position_jitter(width = 0.1,
+                                        height = 0),
+             size = 2) + 
+  stat_summary(fun.data = "mean_cl_boot",
+               shape = 21, 
+               fill = "gray70",
+               size = 1) + 
+  geom_custom(data = df.images,
+              mapping = aes(data = grob,
+                            x = -Inf,
+                            y = Inf),
+              grob_fun = function(x) rasterGrob(x,
+                                                interpolate = T,
+                                                vjust = -0.05,
+                                                hjust = 0)) + 
+  geom_point(data = df.model,
+             mapping = aes(group = model,
+                           fill = model),
+             position = position_dodge(0.7), 
+             shape = 23, 
+             size = 3,
+             alpha = 1) + 
+  geom_text(data = df.text,
+            mapping = aes(group = NA,
+                          label = label,
+                          x = x,
+                          y = y),
+            size = 8) + 
+  facet_wrap(~ structure,
+             ncol = 8,
+             scales = "free_x") +
+  labs(y = "criticality") + 
+  scale_y_continuous(breaks = seq(0, 100, 25)) + 
+  scale_fill_brewer(palette = "Set1") + 
+  coord_cartesian(clip = "off",
+                  ylim = c(0, 100)) + 
+  theme(plot.margin = margin(t = 3.5, l = 0.2, r = 0.2, b = 0.1, unit = "cm"),
+        legend.title = element_blank(),
+        axis.text.x = element_blank(),
+        panel.grid.major.y = element_line(),
+        strip.background = element_blank(),
+        axis.title.x = element_blank(),
+        strip.text = element_blank(),
+        axis.ticks.x = element_blank(),
+        legend.position = "bottom") + 
+  guides(fill = guide_legend(override.aes = list(size = 4)))
+
+ggsave(filename = "../../figures/plots/exp0.pdf",
+       width = 12,
+       height = 6)
+```
+
+## Experiment 1
+
+### Model predictions 
+
+```{r fig.height=6, fig.width=10, warning=FALSE}
+set.seed(1)
+
+dodge = seq(-0.4, 0.4, length.out = 5)
+
+df.plot = df.exp1.fits %>% 
+  select(-criticality, -contains("fitted")) %>% 
+  pivot_longer(cols = -c(structure, person),
+               names_to = "model",
+               values_to = "prediction") %>% 
+  mutate(model = factor(model, levels = model_order),
+         x = ifelse(person == "a", 1, 3)) %>% 
+  group_by(structure, person) %>% 
+  arrange(model) %>% 
+  mutate(x = x + dodge) %>% 
+  ungroup()
+
+func_load_image = function(structure){
+  readPNG(str_c("../../figures/diagrams/", structure, ".png"))
+}
+
+df.images = df.plot %>% 
+  distinct(structure) %>% 
+  mutate(grob = map(.x = structure,
+                    .f = ~ func_load_image(structure = .x)))
+
+df.text = df.plot %>%
+  distinct(structure, person) %>% 
+  mutate(label = rep(c("A", "B"), 4),
+         x = rep(c(1, 3), 4),
+         y = 0)
+
+df.text.structures = df.plot %>%
+  distinct(structure) %>% 
+  arrange(structure) %>% 
+  mutate(x = 2,
+         y = -0.05,
+         label = c("disjunctive", "conjunctive", "mixed 1", "mixed 2"))
+
+ggplot(data = df.plot,
+       mapping = aes(x = x,
+                     fill = model,
+                     y = prediction)) + 
+  geom_point(shape = 23,
+             size = 3,
+             alpha = 1) +
+  geom_text(data = df.text,
+            mapping = aes(y = y,
+                          fill = NA,
+                          label = label),
+            vjust = -0.2,
+            size = 6) +
+  geom_text(data = df.text.structures,
+            mapping = aes(y = y,
+                          fill = NA,
+                          label = label),
+            color = "gray30",
+            size = 7) +
+  geom_custom(data = df.images,
+              mapping = aes(data = grob,
+                            group = NA,
+                            fill = NA,
+                            x = -Inf,
+                            y = Inf),
+              grob_fun = function(x) rasterGrob(x,
+                                                interpolate = T,
+                                                vjust = -0.05,
+                                                hjust = 0)) +
+  facet_wrap(~ structure, 
+             ncol = 4,
+             scales = "free_x") + 
+  labs(y = "criticality") + 
+  scale_y_continuous(breaks = seq(0, 1, 0.25),
+                     expand = expansion(add = c(0, 0.05))) + 
+  scale_fill_manual(name = "model",
+                    breaks = model_order, 
+                    values = c("heuristic" = "#E41A1C",
+                               "necessity" = "#377EB8",
+                               "credit" = "#4DAF4A",
+                               "blame" = "#984EA3",
+                               "responsibility" = "#FF7F00")) + 
+  coord_cartesian(clip = "off",
+                  ylim = c(0, 1)) + 
+  theme(legend.position = "bottom",
+        legend.text = element_text(size = 20), 
+        panel.grid.major.y = element_line(),
+        axis.text.x = element_blank(),
+        axis.title.x = element_blank(),
+        panel.spacing.x = unit(0.5, units = "cm"), 
+        plot.margin = margin(t = 3.5, l = 0.2, r = 0.2, b = 0.1, unit = "cm"),
+        strip.background = element_blank(),
+        legend.box.margin = margin(t = 0.5, unit = "cm"),
+        strip.text = element_blank(),
+        axis.ticks.x = element_blank()) + 
+    guides(fill = guide_legend(override.aes = list(size = 4)))
+
+ggsave(filename = "../../figures/plots/exp1_models.pdf",
+       width = 10,
+       height = 6)
+```
+
+
+### All models 
+
+```{r fig.height=6, fig.width=10, warning=FALSE}
+set.seed(1)
+
+df.plot = df.exp1.long %>% 
+  unite(col = "situation", structure, person,
+        sep = "_",
+        remove = F)
+
+func_load_image = function(structure){
+  readPNG(str_c("../../figures/diagrams/", structure, ".png"))
+}
+
+df.images = df.plot %>% 
+  distinct(structure) %>% 
+  mutate(grob = map(.x = structure,
+                    .f = ~ func_load_image(structure = .x)))
+
+df.model = df.exp1.fits %>% 
+  select(structure, person, contains("_fitted")) %>% 
+  rename_with(.fn = ~ str_remove(., "_fitted")) %>% 
+  pivot_longer(cols = -c(structure, person), 
+               names_to = "model",
+               values_to = "criticality") %>% 
+  mutate(model = factor(model, levels = c(model_order, "baseline"))) %>% 
+  filter(model != "baseline")
+
+df.text = df.exp1.long %>% 
+  group_by(structure, person) %>% 
+  summarize(y = mean(value)) %>% 
+  ungroup() %>% 
+  mutate(label = rep(c("A", "B"), 4))
+
+
+ggplot(data = df.plot,
+       mapping = aes(x = structure,
+                     group = person,
+                     fill = person,
+                     y = value)) + 
+  geom_point(alpha = 0.05,
+             color = "black",
+             position = position_jitterdodge(dodge.width = 0.9,
+                                             jitter.width = 0.1,
+                                             jitter.height = 0),
+             show.legend = F) +
+  stat_summary(fun.data = "mean_cl_boot",
+               position = position_dodge(width = 0.9),
+               shape = 21, 
+               size = 0.75,
+               fill = "gray70",
+               show.legend = F) +
+  geom_point(data = df.model,
+             mapping = aes(group = person,
+                           fill = model,
+                           y = criticality),
+             position = position_jitterdodge(dodge.width = 1.3,
+                                             jitter.width = 0.1),
+             shape = 23,
+             size = 2.5,
+             alpha = 1) +
+  geom_text(data = df.text,
+            mapping = aes(x = structure,
+                          y = y,
+                          group = person,
+                          label = label),
+            position = position_dodge(0.5),
+            size = 5) + 
+  geom_custom(data = df.images,
+              mapping = aes(data = grob,
+                            group = NA,
+                            fill = NA,
+                            x = -Inf,
+                            y = Inf),
+              grob_fun = function(x) rasterGrob(x,
+                                                interpolate = T,
+                                                vjust = -0.05,
+                                                hjust = 0)) +
+  facet_wrap(~ structure, 
+             ncol = 4,
+             scales = "free_x") + 
+  labs(y = "criticality") + 
+  scale_x_discrete(labels = c("mixed_1" = "mixed 1",
+                              "mixed_2" = "mixed 2")) + 
+  scale_y_continuous(breaks = seq(0, 20, 5),
+                     limits = c(0, 20)) + 
+  scale_fill_manual(name = "model",
+                    breaks = model_order, 
+                    values = c("heuristic" = "#E41A1C",
+                               "necessity" = "#377EB8",
+                               "credit" = "#4DAF4A",
+                               "blame" = "#984EA3",
+                               "responsibility" = "#FF7F00")) + 
+  coord_cartesian(clip = "off") + 
+  theme(legend.position = "bottom",
+        legend.text = element_text(size = 20), 
+        legend.title = element_blank(),
+        panel.grid.major.y = element_line(),
+        axis.title.x = element_blank(),
+        plot.margin = margin(t = 4, l = 0.2, r = 0.2, b = 0.1, unit = "cm"),
+        strip.background = element_blank(),
+        strip.text = element_blank(),
+        axis.ticks.x = element_blank()) + 
+    guides(fill = guide_legend(override.aes = list(size = 4)))
+
+ggsave(filename = "../../figures/plots/exp1.pdf",
+       width = 10,
+       height = 6)
+```
+### Selection of models  
+
+```{r fig.height=6, fig.width=10, warning=FALSE}
+set.seed(1)
+
+model_selection = c("heuristic", "necessity", "credit")
+
+df.plot = df.exp1.long %>% 
+  unite(col = "situation", structure, person,
+        sep = "_",
+        remove = F)
+
+func_load_image = function(structure){
+  readPNG(str_c("../../figures/diagrams/", structure, ".png"))
+}
+
+df.images = df.plot %>% 
+  distinct(structure) %>% 
+  mutate(grob = map(.x = structure,
+                    .f = ~ func_load_image(structure = .x)))
+
+df.model = df.exp1.fits %>% 
+  select(structure, person, contains("_fitted")) %>% 
+  rename_with(.fn = ~ str_remove(., "_fitted")) %>% 
+  pivot_longer(cols = -c(structure, person), 
+               names_to = "model",
+               values_to = "criticality") %>% 
+  mutate(model = factor(model, levels = c(model_order, "baseline"))) %>% 
+  filter(model %in% model_selection)
+
+df.text = df.exp1.long %>% 
+  group_by(structure, person) %>% 
+  summarize(y = mean(value)) %>% 
+  ungroup() %>% 
+  mutate(label = rep(c("A", "B"), 4))
+
+
+ggplot(data = df.plot,
+       mapping = aes(x = structure,
+                     group = person,
+                     fill = person,
+                     y = value)) + 
+  geom_point(alpha = 0.05,
+             color = "black",
+             position = position_jitterdodge(dodge.width = 0.9,
+                                             jitter.width = 0.1,
+                                             jitter.height = 0),
+             show.legend = F) +
+  stat_summary(fun.data = "mean_cl_boot",
+               position = position_dodge(width = 0.9),
+               shape = 21, 
+               size = 0.75,
+               fill = "gray70",
+               show.legend = F) +
+  geom_point(data = df.model,
+             mapping = aes(group = person,
+                           fill = model,
+                           y = criticality),
+             position = position_jitterdodge(dodge.width = 1.3,
+                                             jitter.width = 0.1),
+             shape = 23,
+             size = 2.5,
+             alpha = 1) +
+  geom_text(data = df.text,
+            mapping = aes(x = structure,
+                          y = y,
+                          group = person,
+                          label = label),
+            position = position_dodge(0.5),
+            size = 5) + 
+  geom_custom(data = df.images,
+              mapping = aes(data = grob,
+                            group = NA,
+                            fill = NA,
+                            x = -Inf,
+                            y = Inf),
+              grob_fun = function(x) rasterGrob(x,
+                                                interpolate = T,
+                                                vjust = -0.05,
+                                                hjust = 0)) +
+  facet_wrap(~ structure, 
+             ncol = 4,
+             scales = "free_x") + 
+  labs(y = "criticality") + 
+  scale_x_discrete(labels = c("mixed_1" = "mixed 1",
+                              "mixed_2" = "mixed 2")) + 
+  scale_y_continuous(breaks = seq(0, 20, 5),
+                     limits = c(0, 20)) + 
+  scale_fill_manual(name = "model",
+                    breaks = model_order, 
+                    values = c("heuristic" = "#E41A1C",
+                               "necessity" = "#377EB8",
+                               "credit" = "#4DAF4A",
+                               "blame" = "#984EA3",
+                               "responsibility" = "#FF7F00")) + 
+  coord_cartesian(clip = "off") + 
+  theme(legend.position = "bottom",
+        legend.text = element_text(size = 20), 
+        panel.grid.major.y = element_line(),
+        axis.title.x = element_blank(),
+        plot.margin = margin(t = 4, l = 0.2, r = 0.2, b = 0.1, unit = "cm"),
+        strip.background = element_blank(),
+        strip.text = element_blank(),
+        axis.ticks.x = element_blank()) + 
+    guides(fill = guide_legend(override.aes = list(size = 4)))
+
+ggsave(filename = "../../figures/plots/exp1_selection.pdf",
+       width = 10,
+       height = 6)
+```
+## Experiment 2
+
+### All models 
+
+```{r fig.height=7, fig.width=12, warning=FALSE}
+set.seed(1)
+
+df.plot = df.exp2.long %>%
+  filter(condition == "criticality") %>%
+  select(participant, structure, probs, resp1:resp3) %>%
+  pivot_longer(cols = resp1:resp3,
+               values_to = "criticality") %>%
+  mutate(name = as.factor(str_remove(name, "resp"))) %>% 
+  rename(person = name) %>% 
+  mutate(model = NA)
+
+func_load_image = function(structure){
+  readPNG(str_c("../../figures/diagrams/", structure, ".png"))
+}
+
+df.text = df.plot %>% 
+  distinct(structure, probs) %>% 
+  mutate(y = 11.2,
+         label = c("A B C")) %>% 
+  mutate(label = ifelse(structure == "disjunctive", label, NA))
+
+df.images = df.plot %>% 
+  distinct(structure) %>% 
+  mutate(grob = map(.x = structure,
+                    .f = ~ func_load_image(structure = .x)))
+
+df.model = df.exp2.fits %>% 
+  select(structure, probs, person = player, contains("fitted")) %>% 
+  rename_with(.fn = ~ str_remove(., "_fitted")) %>% 
+  pivot_longer(cols = -c(structure, probs, person), 
+               names_to = "model",
+               values_to = "criticality") %>% 
+  mutate(structure = factor(structure,
+                            levels = c("disjunctive", "conjunctive", "mixed"))) %>% 
+  mutate(model = factor(model, levels = c(model_order, "baseline"))) %>% 
+  filter(model != "baseline")
+
+ggplot(data = df.plot,
+       mapping = aes(x = probs,
+                     y = criticality,
+                     group = person,
+                     fill = model)) +
+  geom_point(alpha = 0.01,
+             position = position_jitterdodge(dodge.width = 0.7,
+                                             jitter.width = 0.1,
+                                             jitter.height = 0),
+             show.legend = F) +
+  stat_summary(fun.data = "mean_cl_boot",
+               position = position_dodge(width = 0.7),
+               shape = 21,
+               fill = "gray70", 
+               color = "black",
+               size = 0.6,
+               show.legend = F) +
+  geom_custom(data = df.images,
+              mapping = aes(data = grob,
+                            group = NA,
+                            fill = NA,
+                            x = -Inf,
+                            y = Inf),
+              grob_fun = function(x) rasterGrob(x,
+                                                interpolate = T,
+                                                vjust = 1,
+                                                hjust = -3.05)) + 
+  geom_point(data = df.model,
+             position = position_dodge(0.7), 
+             shape = 23, 
+             size = 2,
+             alpha = 1) + 
+  geom_text(data = df.text,
+            mapping = aes(y = y,
+                          label = label,
+                          group = NA,
+                          fill = NA),
+            size = 6) +
+  facet_wrap(~ structure,
+             ncol = 1,
+             strip.position = "right") +
+  labs(x = "player skill",
+       y = "criticality") +
+  scale_y_continuous(breaks = seq(0, 10, 2)) +
+  scale_x_discrete(labels = c("333" = "3 3 3",
+                              "777" = "7 7 7",
+                              "462" = "4 6 2",
+                              "465" = "4 6 5",
+                              "468" = "4 6 8",
+                              "731" = "7 3 1",
+                              "735" = "7 3 5",
+                              "739" = "7 3 9")) +
+  scale_fill_manual(name = "model",
+                    breaks = model_order, 
+                    values = c("heuristic" = "#E41A1C",
+                               "necessity" = "#377EB8",
+                               "credit" = "#4DAF4A",
+                               "blame" = "#984EA3",
+                               "responsibility" = "#FF7F00")) + 
+  coord_cartesian(clip = "off",
+                  ylim = c(0, 10)) + 
+  theme(plot.margin = margin(t = 0.8, l = 0.2, r = 7.3, b = 0.1, unit = "cm"),
+        legend.title = element_blank(),
+        panel.spacing.y = unit(0.5, "cm"),
+        panel.grid.major.y = element_line(),
+        strip.background = element_blank(),
+        legend.position = "bottom") + 
+  guides(fill = guide_legend(override.aes = list(size = 4)))
+
+ggsave(filename = "../../figures/plots/exp2.pdf",
+       width = 12,
+       height = 7)
+```
+
+### Selection of models 
+
+```{r fig.height=7, fig.width=12, warning=FALSE}
+set.seed(1)
+
+model_selection = c("necessity", "credit")
+
+df.plot = df.exp2.long %>%
+  filter(condition == "criticality") %>%
+  select(participant, structure, probs, resp1:resp3) %>%
+  pivot_longer(cols = resp1:resp3,
+               values_to = "criticality") %>%
+  mutate(name = as.factor(str_remove(name, "resp"))) %>% 
+  rename(person = name) %>% 
+  mutate(model = NA)
+
+func_load_image = function(structure){
+  readPNG(str_c("../../figures/diagrams/", structure, ".png"))
+}
+
+df.text = df.plot %>% 
+  distinct(structure, probs) %>% 
+  mutate(y = 11.2,
+         label = c("A B C")) %>% 
+  mutate(label = ifelse(structure == "disjunctive", label, NA))
+
+df.images = df.plot %>% 
+  distinct(structure) %>% 
+  mutate(grob = map(.x = structure,
+                    .f = ~ func_load_image(structure = .x)))
+
+df.model = df.exp2.fits %>% 
+  select(structure, probs, person = player, contains("fitted")) %>% 
+  rename_with(.fn = ~ str_remove(., "_fitted")) %>% 
+  pivot_longer(cols = -c(structure, probs, person), 
+               names_to = "model",
+               values_to = "criticality") %>% 
+  mutate(model = factor(model, levels = c(model_order, "baseline"))) %>% 
+  filter(model != "baseline") %>% 
+  mutate(structure = factor(structure,
+                            levels = c("disjunctive", "conjunctive", "mixed"))) %>% 
+  filter(model %in% model_selection)
+
+ggplot(data = df.plot,
+       mapping = aes(x = probs,
+                     y = criticality,
+                     group = person,
+                     fill = model)) +
+  geom_point(alpha = 0.01,
+             position = position_jitterdodge(dodge.width = 0.7,
+                                             jitter.width = 0.1,
+                                             jitter.height = 0),
+             show.legend = F) +
+  stat_summary(fun.data = "mean_cl_boot",
+               position = position_dodge(width = 0.7),
+               shape = 21,
+               fill = "gray70", 
+               color = "black",
+               size = 0.6,
+               show.legend = F) +
+  geom_custom(data = df.images,
+              mapping = aes(data = grob,
+                            group = NA,
+                            fill = NA,
+                            x = -Inf,
+                            y = Inf),
+              grob_fun = function(x) rasterGrob(x,
+                                                interpolate = T,
+                                                vjust = 1,
+                                                hjust = -3.05)) + 
+  geom_point(data = df.model,
+             position = position_dodge(0.7), 
+             shape = 23, 
+             size = 2,
+             alpha = 1) + 
+  geom_text(data = df.text,
+            mapping = aes(y = y,
+                          label = label,
+                          group = NA,
+                          fill = NA),
+            size = 6) +
+  facet_wrap(~ structure,
+             ncol = 1,
+             strip.position = "right") +
+  labs(x = "player skill",
+       y = "criticality") +
+  scale_y_continuous(breaks = seq(0, 10, 2)) +
+  scale_x_discrete(labels = c("333" = "3 3 3",
+                              "777" = "7 7 7",
+                              "462" = "4 6 2",
+                              "465" = "4 6 5",
+                              "468" = "4 6 8",
+                              "731" = "7 3 1",
+                              "735" = "7 3 5",
+                              "739" = "7 3 9")) +
+  scale_fill_manual(name = "model",
+                    breaks = model_order, 
+                    values = c("heuristic" = "#E41A1C",
+                               "necessity" = "#377EB8",
+                               "credit" = "#4DAF4A",
+                               "blame" = "#984EA3",
+                               "responsibility" = "#FF7F00")) + 
+  coord_cartesian(clip = "off",
+                  ylim = c(0, 10)) + 
+  theme(plot.margin = margin(t = 0.8, l = 0.2, r = 7.3, b = 0.1, unit = "cm"),
+        panel.spacing.y = unit(0.5, "cm"),
+        panel.grid.major.y = element_line(),
+        strip.background = element_blank(),
+        legend.position = "bottom") + 
+  guides(fill = guide_legend(override.aes = list(size = 4)))
+
+ggsave(filename = "../../figures/plots/exp2_selection.pdf",
+       width = 12,
+       height = 7)
+```
+
+### Probability judgments 
+
+```{r fig.height=6, fig.width=12, warning=FALSE}
+set.seed(1)
+
+df.plot = df.exp2.long %>%
+  filter(condition == "criticality") %>%
+  select(participant, structure, probs, prediction)
+
+func_load_image = function(structure){
+  readPNG(str_c("../../figures/diagrams/", structure, ".png"))
+}
+
+df.model = df.exp2.model %>%
+  mutate(structure = factor(structure,
+                            levels = c("disjunctive", "conjunctive", "mixed"))) %>% 
+  mutate(across(.cols = c(a_p, b_p, c_p),
+                .fns = ~ . * 10)) %>% 
+  unite(col = probs, 
+        a_p, b_p, c_p,
+        sep = "") %>%
+  group_by(probs, structure) %>% 
+  filter(outcome == 1) %>% 
+  summarize(probability = sum(probability) * 100)
+
+df.images = df.plot %>% 
+  distinct(structure) %>% 
+  mutate(grob = map(.x = structure,
+                    .f = ~ func_load_image(structure = .x)))
+
+ggplot(data = df.plot,
+       mapping = aes(x = probs,
+                     y = prediction)) +
+  geom_point(alpha = 0.05,
+             position = position_jitter(width = 0.1, height = 0),
+             show.legend = F) +
+  stat_summary(fun.data = "mean_cl_boot",
+               shape = 21,
+               fill = "gray70", 
+               color = "black",
+               size = 0.6,
+               show.legend = F) +
+  geom_custom(data = df.images,
+              mapping = aes(data = grob,
+                            x = -Inf,
+                            y = Inf),
+              grob_fun = function(x) rasterGrob(x,
+                                                interpolate = T,
+                                                vjust = 1,
+                                                hjust = -3.25)) + 
+  geom_point(data = df.model,
+             mapping = aes(y = probability),
+             shape = 23, 
+             size = 2.5,
+             fill = "yellow",
+             alpha = 1,
+             show.legend = F) + 
+  facet_wrap(~ structure,
+             ncol = 1,
+             strip.position = "right") +
+  labs(x = "player skill",
+       y = "win probability") +
+  scale_y_continuous(breaks = seq(0, 100, 25)) +
+  scale_x_discrete(labels = c("333" = "3 3 3",
+                              "777" = "7 7 7",
+                              "462" = "4 6 2",
+                              "465" = "4 6 5",
+                              "468" = "4 6 8",
+                              "731" = "7 3 1",
+                              "735" = "7 3 5",
+                              "739" = "7 3 9")) +
+  coord_cartesian(clip = "off") + 
+  theme(plot.margin = margin(t = 0.8, l = 0.2, r = 7.3, b = 0.1, unit = "cm"),
+        panel.spacing.y = unit(0.5, "cm"),
+        panel.grid.major.y = element_line(),
+        strip.background = element_blank(),
+        legend.position = "bottom") 
+
+ggsave(filename = "../../figures/plots/exp2_probability.pdf",
+       width = 12,
+       height = 6)
+```
+
+# TABLES 
+
+## Experiment 0
+
+### Model predictions 
+
+```{r}
+df.exp0.predictions %>% 
+  select(structure, heuristic:responsibility) %>% 
+  mutate(index = 1:n(),
+         .before = everything()) %>% 
+  # print_table(format = "latex",
+  #             digits = 2)
+  print_table()
+```
+
+### Model fits 
+
+```{r}
+df.exp0.fits %>% 
+  select(structure, criticality = mean, contains("_fitted")) %>% 
+  rename_with(.fn = ~ str_remove(., "_fitted")) %>% 
+  ungroup() %>% 
+  summarize(across(.cols = heuristic:responsibility,
+                .fns = list(r = ~ cor(criticality, .),
+                            rmse = ~ rmse(criticality, .)))) %>% 
+  pivot_longer(col = everything(),
+               names_to = c("model", "measure"),
+               names_sep = "_") %>% 
+  pivot_wider(names_from = measure, 
+              values_from = value) %>% 
+  # print_table(format = "latex",
+  #             digits = 2)
+  print_table()
+```
+
+
+## Experiment 1 
+
+### Model predictions 
+
+```{r}
+df.exp1.predictions %>% 
+  select(-contains("_p")) %>% 
+  pivot_longer(cols = -structure,
+               names_to = c("player", "model"),
+               names_sep = "_") %>% 
+  pivot_wider(names_from = model,
+              values_from = value) %>% 
+  mutate(player = str_to_upper(player)) %>% 
+  mutate(index = 1:n(),
+         challenge = rep(1:4, each = 2),
+         .before = everything()) %>% 
+  # print_table(format = "latex",
+  #             digits = 2)
+  print_table()
+```
+
+### Model fits 
+
+```{r}
+df.exp1.fits %>% 
+  select(structure, person, criticality, contains("_fitted")) %>% 
+  rename_with(.fn = ~ str_remove(., "_fitted")) %>% 
+  ungroup() %>% 
+  summarize(across(.cols = heuristic:responsibility,
+                .fns = list(r = ~ cor(criticality, .),
+                            rmse = ~ rmse(criticality, .)))) %>% 
+  pivot_longer(col = everything(),
+               names_to = c("model", "measure"),
+               names_sep = "_") %>% 
+  pivot_wider(names_from = measure, 
+              values_from = value) %>% 
+  # print_table(format = "latex",
+  #             digits = 2)
+  print_table()
+```
+
+
+## Experiment 2 
+
+### Model predictions 
+
+```{r}
+df.exp2.predictions %>% 
+  mutate(trial = 1:n(),
+         .before = everything()) %>% 
+  select(-label) %>% 
+  pivot_longer(cols = -c(trial, structure),
+               names_to = c("player", "model"),
+               names_sep = "_") %>% 
+  pivot_wider(names_from = model,
+              values_from = value) %>% 
+  rename(skill = p) %>% 
+  mutate(skill = skill * 10,
+         player = str_to_upper(player),
+         structure = factor(structure, levels = c("conjunctive", "disjunctive", "mixed"))) %>% 
+  arrange(structure, trial, player) %>% 
+  mutate(trial = rep(1:(n()/3), each = 3),
+         skill = as.character(skill)) %>% 
+  mutate(index = 1:n(),
+         .before = everything()) %>% 
+  # print_table(format = "latex",
+  #             digits = 2)
+  print_table()
+  
+```
+
+### Model fits 
+
+```{r}
+df.exp2.fits %>% 
+  select(structure, probs, player, criticality, contains("_fitted")) %>% 
+  rename_with(.fn = ~ str_remove(., "_fitted")) %>% 
+  ungroup() %>% 
+  summarize(across(.cols = necessity:responsibility,
+                .fns = list(r = ~ cor(criticality, .),
+                            rmse = ~ rmse(criticality, .)))) %>% 
+  pivot_longer(col = everything(),
+               names_to = c("model", "measure"),
+               names_sep = "_") %>% 
+  pivot_wider(names_from = measure, 
+              values_from = value) %>% 
+  # print_table(format = "latex",
+  #             digits = 2)
+  print_table()
+  
+```
+
+## Combined 
+
+### Model fits 
+
+#### Overall 
+
+```{r}
+df.exp0.metrics = df.exp0.fits %>% 
+  select(structure, criticality = mean, contains("_fitted")) %>% 
+  rename_with(.fn = ~ str_remove(., "_fitted")) %>% 
+  ungroup() %>% 
+  summarize(across(.cols = heuristic:baseline,
+                .fns = list(r = ~ cor(criticality, .),
+                            rmse = ~ rmse(criticality, .)))) %>% 
+  pivot_longer(col = everything(),
+               names_to = c("model", "measure"),
+               names_sep = "_") %>% 
+  pivot_wider(names_from = measure, 
+              values_from = value)
+
+df.exp1.metrics = df.exp1.fits %>% 
+  select(structure, person, criticality, contains("_fitted")) %>% 
+  rename_with(.fn = ~ str_remove(., "_fitted")) %>% 
+  ungroup() %>% 
+  summarize(across(.cols = heuristic:baseline,
+                .fns = list(r = ~ cor(criticality, .),
+                            rmse = ~ rmse(criticality, .)))) %>% 
+  pivot_longer(col = everything(),
+               names_to = c("model", "measure"),
+               names_sep = "_") %>% 
+  pivot_wider(names_from = measure, 
+              values_from = value)
+
+df.exp2.metrics = df.exp2.fits %>% 
+  select(structure, probs, player, criticality, contains("_fitted")) %>% 
+  rename_with(.fn = ~ str_remove(., "_fitted")) %>% 
+  ungroup() %>% 
+  summarize(across(.cols = necessity:baseline,
+                   .fns = list(r = ~ cor(criticality, .),
+                               rmse = ~ rmse(criticality, .)))) %>% 
+  pivot_longer(col = everything(),
+               names_to = c("model", "measure"),
+               names_sep = "_") %>% 
+  pivot_wider(names_from = measure, 
+              values_from = value)
+```
+
+#### Individual participants 
+
+##### Experiment 0
+
+```{r}
+df.exp0.nbest = df.exp0.long %>% 
+  left_join(df.exp0.predictions %>% 
+              select(structure, heuristic:responsibility),
+            by = "structure") %>% 
+  group_by(participant) %>%
+  summarize(baseline = list(lm(formula = criticality ~ 1)),
+            across(.cols = heuristic:responsibility,
+                   .fns = ~ list(lm(criticality ~ 1 + .)))) %>% 
+  pivot_longer(cols = -c(participant, baseline),
+               names_to = "model", 
+               values_to = "fit") %>% 
+  mutate(anova = map2_lgl(.x = baseline,
+                          .y = fit,
+                          .f = ~ anova(.x, .y)$`Pr(>F)`[2] < .05)) %>% 
+  mutate(data = map(.x = fit, .f = ~ augment(.x)),
+         rmse = map_dbl(.x = data, .f = ~ sqrt(mean(.x$.resid^2))),
+         r = map_dbl(.x = data, .f = ~ cor(.x$.fitted, .x$criticality))) %>% 
+  select(participant, model, rmse, r, anova) %>% 
+  group_by(participant) %>% 
+  slice_min(rmse,
+            n = 1,
+            with_ties = F) %>% 
+  replace_na(list(anova = F)) %>% 
+  ungroup() %>% 
+  mutate(model = ifelse(anova == T, model, "baseline")) %>% 
+  mutate(model = factor(model, levels = c(model_order, "baseline"))) %>% 
+  count(model,
+        .drop = F)
+```
+
+##### Experiment 1
+
+```{r, message=FALSE, warning=FALSE}
+df.exp1.nbest = df.exp1.long %>% 
+  rename(criticality = value) %>% 
+  left_join(df.exp1.fits %>% 
+              select(structure, person, heuristic:responsibility),
+            by = c("structure", "person")) %>% 
+  group_by(participant) %>% 
+  summarize(baseline = list(lm(formula = criticality ~ 1)),
+            across(.cols = heuristic:responsibility,
+                   .fns = ~ list(lm(criticality ~ 1 + .)))) %>% 
+  pivot_longer(cols = -c(participant, baseline),
+               names_to = "model", 
+               values_to = "fit") %>% 
+  mutate(anova = map2_lgl(.x = baseline,
+                          .y = fit,
+                          .f = ~ anova(.x, .y)$`Pr(>F)`[2] < .05)) %>% 
+  mutate(data = map(.x = fit, .f = ~ augment(.x)),
+         rmse = map_dbl(.x = data, .f = ~ sqrt(mean(.x$.resid^2))),
+         r = map_dbl(.x = data, .f = ~ cor(.x$.fitted, .x$criticality))) %>% 
+  select(participant, model, rmse, r, anova) %>% 
+  group_by(participant) %>% 
+  slice_min(rmse,
+            n = 1,
+            with_ties = F) %>% 
+  replace_na(list(anova = F)) %>% 
+  ungroup() %>% 
+  mutate(model = ifelse(anova == T, model, "baseline")) %>% 
+  mutate(model = factor(model, levels = c(model_order, "baseline"))) %>% 
+  count(model,
+        .drop = F)
+```
+
+##### Experiment 2
+
+```{r, message=FALSE, warning=FALSE}
+df.exp2.nbest = df.exp2.long %>% 
+  filter(condition == "criticality") %>% 
+  select(participant, structure, probs, p1:p3, resp1:resp3) %>% 
+  mutate(index = 1:n(),
+         .before = everything()) %>% 
+  pivot_longer(cols = -c(index, participant, structure, probs),
+               names_to = c("measure", "player"),
+               names_sep = -1) %>% 
+  pivot_wider(names_from = measure, 
+              values_from = value) %>% 
+  rename(criticality = resp) %>% 
+  left_join(df.exp2.fits %>% 
+              select(structure, probs, player,p, necessity:responsibility),
+            by = c("structure", "probs", "player", "p")) %>%  
+  group_by(participant) %>% 
+  summarize(baseline = list(lm(formula = criticality ~ 1)),
+            across(.cols = necessity:responsibility,
+                   .fns = ~ list(lm(criticality ~ 1 + .)))) %>% 
+  pivot_longer(cols = -c(participant, baseline),
+               names_to = "model", 
+               values_to = "fit") %>% 
+  mutate(anova = map2_lgl(.x = baseline,
+                          .y = fit,
+                          .f = ~ anova(.x, .y)$`Pr(>F)`[2] < .05)) %>% 
+  mutate(data = map(.x = fit, .f = ~ augment(.x)),
+         rmse = map_dbl(.x = data, .f = ~ sqrt(mean(.x$.resid^2))),
+         r = map_dbl(.x = data, .f = ~ cor(.x$.fitted, .x$criticality))) %>% 
+  select(participant, model, rmse, r, anova) %>% 
+  group_by(participant) %>% 
+  slice_min(rmse,
+            n = 1,
+            with_ties = F) %>% 
+  replace_na(list(anova = F)) %>% 
+  ungroup() %>% 
+  mutate(model = ifelse(anova == T, model, "baseline")) %>% 
+  mutate(model = factor(model, levels = c(model_order, "baseline"))) %>% 
+  count(model,
+        .drop = F)
+```
+
+#### Table 
+
+```{r, message=FALSE, warning=FALSE}
+df.exp0.metrics %>% 
+  rename_with(.fn = ~ str_c(., "_0"),
+              .cols = -model) %>% 
+  left_join(df.exp0.nbest %>% 
+              rename(n_0 = n)) %>% 
+  left_join(df.exp1.metrics %>% 
+              rename_with(.fn = ~ str_c(., "_1"),
+                          .cols = -model)) %>% 
+  left_join(df.exp1.nbest %>% 
+              rename(n_1 = n)) %>% 
+  left_join(df.exp2.metrics %>% 
+              rename_with(.fn = ~ str_c(., "_2"),
+                          .cols = -model)) %>% 
+  left_join(df.exp2.nbest %>% 
+              rename(n_2 = n)) %>% 
+  mutate(model = factor(model, levels = c(model_order, "baseline")),
+         across(.cols = contains("r_"),
+                .fns = ~ ifelse(model == "baseline", NA, .))) %>% 
+  arrange(model) %>% 
+  # print_table(format = "latex",
+  #             digits = 2)
+  print_table()
+```
+
+## Example 
+
+```{r message=FALSE, warning=FALSE}
+# data frame 
+act = c(0, 1)
+structure = c("disjunctive", "conjunctive")
+
+df.example = expand_grid(a = act,
+                         b = act, 
+                         a_p = 0.8,
+                         b_p = 0.2,
+                         c_p = NA, 
+                         d_p = NA,
+                         structure = structure) %>% 
+  relocate(structure) %>% 
+  arrange(structure) %>% 
+  mutate(outcome = case_when(
+    structure == "disjunctive" & (a == 1 | b == 1) ~ 1,
+    structure == "conjunctive" & (a == 1 & b == 1) ~ 1,
+    TRUE ~ 0)) %>% 
+  mutate(pivotal_a = case_when(
+    structure == "disjunctive" & b == 0 ~ 1,
+    structure == "conjunctive" & b == 1 ~ 1,
+    TRUE ~ 0)) %>% 
+  mutate(pivotal_b = case_when(
+    structure == "disjunctive" & a == 0 ~ 1,
+    structure == "conjunctive" & a == 1 ~ 1,
+    TRUE ~ 0)) %>% 
+  mutate(probability = (a * a_p + (1 - a) * (1 - a_p)) * 
+           (b * b_p + (1 - b) * (1 - b_p)))
+
+
+# models 
+df.example.predictions = df.example %>% 
+  distinct(structure) %>% 
+  left_join(df.example %>% 
+              fun_responsibility(player = "a",
+                                 type = "blame") %>% 
+              select(structure, a_blame)) %>% 
+  left_join(df.example %>% 
+              fun_responsibility(player = "b",
+                                 type = "blame") %>% 
+              select(structure, b_blame)) %>% 
+  left_join(df.example %>% 
+              fun_responsibility(player = "a",
+                                 type = "credit") %>% 
+              select(structure, a_credit)) %>% 
+  left_join(df.example %>% 
+              fun_responsibility(player = "b",
+                                 type = "credit") %>% 
+              select(structure, b_credit)) %>% 
+  left_join(df.example %>% 
+              fun_responsibility(player = "a",
+                                 type = "responsibility") %>% 
+              select(structure, a_responsibility)) %>% 
+  left_join(df.example %>% 
+              fun_responsibility(player = "b",
+                                 type = "responsibility") %>% 
+              select(structure, b_responsibility)) %>% 
+  rename_with(.fn = ~ str_remove(., "pivotal_")) %>% 
+  pivot_longer(cols = -structure, 
+               names_to = c("player", "model"),
+               names_sep = "_") %>% 
+  pivot_wider(names_from = model,
+              values_from = value)
+
+df.example.predictions %>% 
+  print_table()
+```
+
+## Correlation between models 
+
+```{r, warning=FALSE, message=FALSE}
+df.predictions = df.exp0.predictions %>% 
+  select(structure, heuristic:responsibility) %>% 
+  mutate(experiment = 0,
+         player = "a",
+         probs = "5") %>% 
+  bind_rows(
+    df.exp1.predictions %>% 
+      select(-c(a_p, b_p, c_p, d_p)) %>% 
+      pivot_longer(cols = -structure, 
+                   names_to = c("player", "model"),
+                   names_sep = "_") %>% 
+      pivot_wider(names_from = model,
+                  values_from = value) %>% 
+      mutate(experiment = 1,
+             probs = "5")
+  ) %>% 
+  bind_rows(
+    df.exp2.predictions %>% 
+      mutate(across(.cols = c(a_p, b_p, c_p),
+                    .fns = ~ . * 10)) %>% 
+      unite(col = "probs",
+            a_p, b_p, c_p,
+            sep = "") %>% 
+      select(-label) %>% 
+      pivot_longer(cols = -c(probs, structure),
+                   names_to = c("player", "model"),
+                   names_sep = "_") %>% 
+      pivot_wider(names_from = model,
+                  values_from = value) %>% 
+      mutate(experiment = 2)
+  ) %>% 
+  left_join(df.exp0.fits %>% 
+              select(structure, criticality = mean) %>% 
+              mutate(experiment = 0,
+                     probs = "5", 
+                     player = "a",
+                     criticality = criticality / 100) %>% 
+              bind_rows(df.exp1.fits %>% 
+                          select(structure, player = person, criticality) %>% 
+                          mutate(experiment = 1,
+                                 probs = "5",
+                                 criticality = criticality / 20)) %>% 
+              bind_rows(df.exp2.fits %>% 
+                          select(structure, probs, player, criticality) %>% 
+                          mutate(experiment = 2,
+                                 player = factor(player, levels = 1:3, labels = letters[1:3]),
+                                 criticality = criticality / 10))) %>% 
+  relocate(experiment, player, probs) 
+
+# Experiment 0 
+df.exp0.cor = df.predictions %>% 
+  filter(experiment %in% 0) %>%
+  select(heuristic:responsibility) %>% 
+  correlate() %>% 
+  fashion()
+
+# Experiment 1 
+df.exp1.cor = df.predictions %>% 
+  filter(experiment %in% 1) %>%
+  select(heuristic:responsibility) %>% 
+  correlate() %>% 
+  fashion()
+
+# Experiment 2 
+df.exp2.cor = df.predictions %>% 
+  filter(experiment %in% 2) %>%
+  select(heuristic:responsibility) %>% 
+  correlate() %>% 
+  fashion()
+
+# All 
+df.all.cor = df.predictions %>% 
+  filter(experiment %in% 0:2) %>%
+  select(heuristic:responsibility) %>% 
+  correlate() %>% 
+  fashion()
+
+# Correlation tables 
+df.exp0.cor %>%
+  print_table()
+
+df.exp1.cor %>%
+  print_table()
+
+df.exp2.cor %>%
+  print_table()
+
+df.all.cor %>%
+  print_table()
+```
+
+# Appendix 
+
+## Experiment 2: Effort judgments 
+
+```{r fig.height=6, fig.width=12, warning=FALSE}
+set.seed(1)
+
+df.plot = df.exp2.long %>%
+  filter(condition == "effort") %>%
+  select(participant, structure, probs, contains("resp")) %>% 
+  pivot_longer(cols = contains("resp"),
+               names_to = "person",
+               values_to = "effort") %>% 
+  mutate(person = str_remove(person, "resp"))
+
+func_load_image = function(structure){
+  readPNG(str_c("../../figures/diagrams/", structure, ".png"))
+}
+
+df.images = df.plot %>% 
+  distinct(structure) %>% 
+  mutate(grob = map(.x = structure,
+                    .f = ~ func_load_image(structure = .x)))
+
+ggplot(data = df.plot,
+       mapping = aes(x = probs,
+                     y = effort,
+                     group = person,
+                     fill = person)) +
+  geom_point(alpha = 0.01,
+             position = position_jitterdodge(dodge.width = 0.7,
+                                             jitter.width = 0.1,
+                                             jitter.height = 0),
+             show.legend = F) +
+  stat_summary(fun.data = "mean_cl_boot",
+               position = position_dodge(width = 0.7),
+               shape = 21,
+               fill = "gray70", 
+               color = "black",
+               size = 0.6,
+               show.legend = F) +
+  geom_custom(data = df.images,
+              mapping = aes(data = grob,
+                            group = NA,
+                            fill = NA,
+                            x = -Inf,
+                            y = Inf),
+              grob_fun = function(x) rasterGrob(x,
+                                                interpolate = T,
+                                                vjust = 1,
+                                                hjust = -2.6)) + 
+  geom_text(data = df.text,
+            mapping = aes(y = y,
+                          label = label,
+                          group = NA,
+                          fill = NA),
+            size = 6) +
+  facet_wrap(~ structure,
+             ncol = 1,
+             strip.position = "right") +
+  labs(x = "player skill",
+       y = "effort") +
+  scale_y_continuous(breaks = seq(0, 10, 2)) +
+  scale_x_discrete(labels = c("333" = "3 3 3",
+                              "777" = "7 7 7",
+                              "462" = "4 6 2",
+                              "465" = "4 6 5",
+                              "468" = "4 6 8",
+                              "731" = "7 3 1",
+                              "735" = "7 3 5",
+                              "739" = "7 3 9")) +
+  coord_cartesian(clip = "off",
+                  ylim = c(0, 10)) + 
+  theme(plot.margin = margin(t = 0.8, l = 0.2, r = 8, b = 0.1, unit = "cm"),
+        panel.spacing.y = unit(0.5, "cm"),
+        panel.grid.major.y = element_line(),
+        strip.background = element_blank(),
+        legend.position = "bottom")
+
+ggsave(filename = "../../figures/plots/exp2_effort.pdf",
+       width = 12,
+       height = 7)
+```
+
+# Session info
+
+```{r, echo=F}
+sessionInfo()
+```
