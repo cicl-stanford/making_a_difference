@@ -14,22 +14,25 @@ output:
 # Load packages
 
 ```{r, message=F}
-library("knitr")
-library("png")
-library("grid")
-library("egg")        
-library("janitor")      # for cleaning variable names 
-library("glue")      
-library("corrr")      
-library("xtable")      
-library("kableExtra")      
-library("brms")      
-library("broom.mixed")      
-library("Metrics")      # for rmse     
-library("tidyverse")
+library("knitr")       # for knitting
+library("kableExtra")  # for knitting
+library("png")         # for adding pngs to plots
+library("grid")        # for adding pngs to plots
+library("egg")         # for adding pngs to plots
+library("janitor")     # for cleaning variable names
+library("corrr")       # for correlation matrix
+library("xtable")      # for latex tables
+library("brms")        # for Bayesian analysis
+library("broom.mixed") # for model summaries
+library("pwr")         # for power analysis
+library("lme4")        # for mixed effects models
+library("emmeans")     # for estimated marginal means
+library("rsample")     # for bootstrapping
+library("Metrics")     # for rmse
+library("tidyverse")   # for everything else
 ```
 
-# Settings 
+# Settings
 
 ```{r}
 theme_set(theme_classic() + 
@@ -110,7 +113,7 @@ df.exp1.long = df.exp1 %>%
                                        "mixed_2")))
 ```
 
-### Demographics 
+### Demographics
 
 ```{r}
 df.exp1 %>% 
@@ -197,10 +200,6 @@ df.exp2.long = df.exp2 %>%
 # 6 731
 # 7 735
 # 8 739
-
-# df.tmp = df.exp2.long %>% 
-#   filter(participant == 1) %>% 
-#   select(trial, structure, p1:p3)
 
 df.exp2.info = tibble(trial = 1:24,
                       structure = rep(c("disjunctive", "conjunctive", "mixed"), each = 8),
@@ -293,7 +292,7 @@ df.exp2.long = df.exp2.long %>%
                             levels = c("disjunctive", "conjunctive", "mixed")))
 ```
 
-### Demographics 
+### Demographics
 
 ```{r}
 df.exp2.demographics %>% 
@@ -389,7 +388,7 @@ fun_responsibility = function(data, player, type){
 ```
 
 
-### Probabilistic criticality model 
+### Probabilistic criticality model
 
 ```{r}
 fun_prob_criticality = function(n, k, p){
@@ -747,9 +746,60 @@ df.exp2.fits = df.exp2.long %>%
          baseline_fitted = lm(criticality ~ 1)$fitted)
 ```
 
-# STATS 
+# STATS
 
-## Experiment 1 
+## Experiment 1
+
+### Difference between player A and B in mixed 1 challenge
+
+```{r}
+df.stats = df.exp1.long %>% 
+  filter(structure == "mixed_1")
+
+fit.exp1.mixed1 = brm(formula = value ~ 1 + person + (1 | participant),
+                       data = df.stats, 
+                       seed = 1,
+                       control = list(adapt_delta = 0.9),
+                       file = "cache/fit.exp1.mixed1")
+
+fit.exp1.mixed1 %>% 
+  tidy() %>% 
+  filter(term == "personb") %>% 
+  select(term, estimate, contains("conf")) %>% 
+  print_table()
+
+df.stats %>%
+  group_by(person) %>% 
+  summarize(criticality_mean = mean(value),
+            criticality_sd = sd(value)) %>% 
+  print_table()
+```
+
+### Difference between player A and B in mixed 2 challenge
+
+```{r}
+df.stats = df.exp1.long %>% 
+  filter(structure == "mixed_2")
+
+fit.exp1.mixed2 = brm(formula = value ~ 1 + person + (1 | participant),
+                       data = df.stats, 
+                       seed = 1,
+                       control = list(adapt_delta = 0.9),
+                       file = "cache/fit.exp1.mixed2")
+
+fit.exp1.mixed2 %>% 
+  tidy() %>% 
+  filter(term == "personb") %>% 
+  select(term, estimate, contains("conf")) %>% 
+  print_table()
+
+df.stats %>%
+  group_by(person) %>% 
+  summarize(criticality_mean = mean(value),
+            criticality_sd = sd(value)) %>% 
+  print_table()
+```
+
 
 ### Difference between player A in mixed challenges
 
@@ -777,7 +827,6 @@ df.stats %>%
   summarize(criticality_mean = mean(value),
             criticality_sd = sd(value)) %>% 
   print_table()
-
 ```
 
 ### Difference between player B in mixed challenges
@@ -808,7 +857,7 @@ df.stats %>%
   print_table()
 ```
 
-### Number of participants who give higher rating to A than B in mixed 2 challenge 
+### Number of participants who give higher rating to A than B in mixed 2 challenge
 
 ```{r}
 df.exp1.long %>% 
@@ -816,13 +865,98 @@ df.exp1.long %>%
   pivot_wider(names_from = person,
               values_from = value) %>% 
   mutate(difference = (a - b) > 0) %>% 
-  count(structure, difference)
+  count(structure, difference) %>% 
+  print_table()
+```
+
+### Power analysis
+
+#### pwr package
+
+```{r}
+df.params = df.exp1.long %>% 
+  filter(structure == "mixed_2") %>% 
+  pivot_wider(names_from = person,
+              values_from = value) %>% 
+  mutate(difference = a - b) %>% 
+  summarize(d_mean = mean(difference),
+            d_sd = sd(difference))
+
+pwr.t.test(
+  d = df.params$d_mean / df.params$d_sd,
+  n = 40,
+  # d = 0.5,
+  # power = 0.8,
+  sig.level = 0.05,
+  type = "paired",
+  alternative = "two.sided")
 ```
 
 
-## Experiment 2 
+#### Bootstrapped
 
-### Increase for player C in disjunctive challenges 
+```{r eval=FALSE}
+set.seed(1)
+
+n_participants = 40
+n_samples = 100
+
+df.exp1.power = df.exp1.long %>% 
+  unite(col = prediction, c(structure, person)) %>% 
+  filter(str_detect(prediction, "mixed_2")) %>% 
+  pivot_wider(names_from = prediction,
+              values_from = value)
+
+# test on full sample 
+fit = t.test(x = df.exp1.power$mixed_2_a, 
+             y = df.exp1.power$mixed_2_b,
+             paired = T)
+
+
+# bootstrapping function 
+fun_exp1_power = function(dd, n_participants){
+  
+  # bootstrapped participant sample 
+  participant = unique(dd$participant)
+  participant_sample = sample(participant,
+                              size = n_participants,
+                              replace = T)
+  
+  # data frame with bootstrapped participants 
+  df.tmp = tibble()
+  for (i in participant_sample){
+    df.tmp = bind_rows(df.tmp,
+                       dd %>% 
+                         filter(participant == i))  
+  }
+  
+  # t-test 
+  fit = t.test(x = df.tmp$mixed_2_a, 
+               y = df.tmp$mixed_2_b,
+               paired = T)
+  
+  return(fit$p.value)
+}
+
+# set up simulation 
+df.exp1.power.analysis = expand_grid(n_participants = 5:n_participants,
+                                     sample = 1:n_samples) %>% 
+  mutate(pvalue = map(.x = n_participants,
+                      .f = ~ fun_exp1_power(dd = df.exp1.power,
+                                            n_participants = .x))) %>% 
+  mutate(sig = pvalue < .05)
+
+save(df.exp1.power.analysis, file = "cache/df.exp1.power.analysis.RData")
+```
+
+```{r}
+load(file = "cache/df.exp1.power.analysis.RData")
+```
+
+
+## Experiment 2
+
+### Increase for player C in disjunctive challenges
 
 ```{r}
 df.stats = df.exp2.long %>% 
@@ -934,7 +1068,7 @@ ggsave(filename = "../../figures/plots/exp0.pdf",
 
 ## Experiment 1
 
-### Model predictions 
+### Model predictions
 
 ```{r fig.height=6, fig.width=10, warning=FALSE}
 set.seed(1)
@@ -1038,7 +1172,7 @@ ggsave(filename = "../../figures/plots/exp1_models.pdf",
 ```
 
 
-### All models 
+### All models
 
 ```{r fig.height=6, fig.width=10, warning=FALSE}
 set.seed(1)
@@ -1147,7 +1281,8 @@ ggsave(filename = "../../figures/plots/exp1.pdf",
        width = 10,
        height = 6)
 ```
-### Selection of models  
+
+### Selection of models
 
 ```{r fig.height=6, fig.width=10, warning=FALSE}
 set.seed(1)
@@ -1257,9 +1392,67 @@ ggsave(filename = "../../figures/plots/exp1_selection.pdf",
        width = 10,
        height = 6)
 ```
+
+### Power analysis
+
+#### pwr package
+
+```{r}
+df.params = df.exp1.long %>% 
+  filter(structure == "mixed_2") %>% 
+  pivot_wider(names_from = person,
+              values_from = value) %>% 
+  mutate(difference = a - b) %>% 
+  summarize(d_mean = mean(difference),
+            d_sd = sd(difference))
+
+l.power = pwr.t.test(
+  # d = df.params$d_mean / df.params$d_sd,
+  d = 0.5,
+  power = 0.8,
+  sig.level = 0.05,
+  type = "paired",
+  alternative = "two.sided")
+
+l.power %>% 
+  plot() + 
+  theme(text = element_text(size = 16))
+
+ggsave(filename = "../../figures/plots/exp1_power_analysis_ttest.pdf",
+       width = 8/(1.5),
+       height = 6/(1.5))
+
+```
+
+
+#### bootstrapping
+
+```{r, fig.width=8, fig.height=6}
+df.plot = df.exp1.power.analysis %>% 
+  group_by(n_participants) %>% 
+  summarize(power = sum(sig, na.rm = T)/n())
+
+ggplot(data = df.plot, 
+       mapping = aes(x = n_participants,
+                     y = power)) + 
+  geom_line() + 
+  geom_point() + 
+  scale_x_continuous(breaks = seq(5, 40, 5)) + 
+  scale_y_continuous(breaks = seq(0, 1, 0.2),
+                     limits = c(0, 1),
+                     expand = expansion(add = c(0, 0.01))) + 
+  labs(x = '# participants') + 
+  theme(panel.grid.major.x = element_line(),
+        panel.grid.major.y = element_line())
+
+ggsave(filename = "../../figures/plots/exp1_power_analysis_bootstrap.pdf",
+       width = 8,
+       height = 6)
+```
+
 ## Experiment 2
 
-### All models 
+### All models
 
 ```{r fig.height=7, fig.width=12, warning=FALSE}
 set.seed(1)
@@ -1373,7 +1566,7 @@ ggsave(filename = "../../figures/plots/exp2.pdf",
        height = 7)
 ```
 
-### Selection of models 
+### Selection of models
 
 ```{r fig.height=7, fig.width=12, warning=FALSE}
 set.seed(1)
@@ -1489,7 +1682,7 @@ ggsave(filename = "../../figures/plots/exp2_selection.pdf",
        height = 7)
 ```
 
-### Probability judgments 
+### Probability judgments
 
 ```{r fig.height=6, fig.width=12, warning=FALSE}
 set.seed(1)
@@ -1572,11 +1765,11 @@ ggsave(filename = "../../figures/plots/exp2_probability.pdf",
        height = 6)
 ```
 
-# TABLES 
+# TABLES
 
 ## Experiment 0
 
-### Model predictions 
+### Model predictions
 
 ```{r}
 df.exp0.predictions %>% 
@@ -1588,7 +1781,7 @@ df.exp0.predictions %>%
   print_table()
 ```
 
-### Model fits 
+### Model fits
 
 ```{r}
 df.exp0.fits %>% 
@@ -1603,15 +1796,13 @@ df.exp0.fits %>%
                names_sep = "_") %>% 
   pivot_wider(names_from = measure, 
               values_from = value) %>% 
-  # print_table(format = "latex",
-  #             digits = 2)
   print_table()
 ```
 
 
-## Experiment 1 
+## Experiment 1
 
-### Model predictions 
+### Model predictions
 
 ```{r}
 df.exp1.predictions %>% 
@@ -1625,12 +1816,10 @@ df.exp1.predictions %>%
   mutate(index = 1:n(),
          challenge = rep(1:4, each = 2),
          .before = everything()) %>% 
-  # print_table(format = "latex",
-  #             digits = 2)
   print_table()
 ```
 
-### Model fits 
+### Model fits
 
 ```{r}
 df.exp1.fits %>% 
@@ -1651,9 +1840,9 @@ df.exp1.fits %>%
 ```
 
 
-## Experiment 2 
+## Experiment 2
 
-### Model predictions 
+### Model predictions
 
 ```{r}
 df.exp2.predictions %>% 
@@ -1680,7 +1869,7 @@ df.exp2.predictions %>%
   
 ```
 
-### Model fits 
+### Model fits
 
 ```{r}
 df.exp2.fits %>% 
@@ -1701,11 +1890,11 @@ df.exp2.fits %>%
   
 ```
 
-## Combined 
+## Combined
 
-### Model fits 
+### Model fits
 
-#### Overall 
+#### Overall
 
 ```{r}
 df.exp0.metrics = df.exp0.fits %>% 
@@ -1748,7 +1937,7 @@ df.exp2.metrics = df.exp2.fits %>%
               values_from = value)
 ```
 
-#### Individual participants 
+#### Individual participants
 
 ##### Experiment 0
 
@@ -1860,7 +2049,7 @@ df.exp2.nbest = df.exp2.long %>%
         .drop = F)
 ```
 
-#### Table 
+#### Table
 
 ```{r, message=FALSE, warning=FALSE}
 df.exp0.metrics %>% 
@@ -1882,12 +2071,10 @@ df.exp0.metrics %>%
          across(.cols = contains("r_"),
                 .fns = ~ ifelse(model == "baseline", NA, .))) %>% 
   arrange(model) %>% 
-  # print_table(format = "latex",
-  #             digits = 2)
   print_table()
 ```
 
-## Example 
+## Example
 
 ```{r message=FALSE, warning=FALSE}
 # data frame 
@@ -1957,7 +2144,7 @@ df.example.predictions %>%
   print_table()
 ```
 
-## Correlation between models 
+## Correlation between models
 
 ```{r, warning=FALSE, message=FALSE}
 df.predictions = df.exp0.predictions %>% 
@@ -2051,9 +2238,9 @@ df.all.cor %>%
   print_table()
 ```
 
-# Appendix 
+# Appendix
 
-## Experiment 2: Effort judgments 
+## Experiment 2: Effort judgments
 
 ```{r fig.height=6, fig.width=12, warning=FALSE}
 set.seed(1)

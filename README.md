@@ -1,4 +1,4 @@
-# Making a difference: Criticality in groups
+# Making a positive difference: Criticality in groups
 
 ## Abstract
 
